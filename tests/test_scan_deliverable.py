@@ -57,16 +57,32 @@ class ScanDeliverableTests(unittest.TestCase):
             report = SCANNER.scan_file(path, False)
             self.assertIn("comments/annotations present", report["structural"])
 
-    def test_dirty_xlsx_detects_draft_term(self) -> None:
+    def test_source_comment_url_identifier_is_still_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "comment-url-token.xlsx"
+            write_zip(
+                path,
+                {
+                    "xl/worksheets/sheet1.xml": "<worksheet/>",
+                    "xl/comments/comment1.xml": (
+                        "<comments><commentList><comment ref='A1'><text><t>来源：https://example.com/TODO/report</t></text></comment></commentList></comments>"
+                    ),
+                },
+            )
+            report = SCANNER.scan_file(path, True)
+            self.assertEqual(report["annotations"]["clean_source_comments"], 1)
+            self.assertEqual(report["annotations"]["risky_comments"], 0)
+
+    def test_dirty_xlsx_detects_standalone_todo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "dirty.xlsx"
             write_zip(
                 path,
-                {"xl/worksheets/sheet1.xml": "<worksheet><sheetData><row><c><is><t>待核实</t></is></c></row></sheetData></worksheet>"},
+                {"xl/worksheets/sheet1.xml": "<worksheet><sheetData><row><c><is><t>TODO</t></is></c></row></sheetData></worksheet>"},
             )
             report = SCANNER.scan_file(path, True)
             self.assertTrue(SCANNER.risky(report))
-            self.assertTrue(any(hit["term"] == "待核实" for hit in report["high_hits"]))
+            self.assertTrue(any(hit["term"] == "TODO" for hit in report["high_hits"]))
 
     def test_dirty_docx_detects_todo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -74,6 +90,35 @@ class ScanDeliverableTests(unittest.TestCase):
             write_zip(path, {"word/document.xml": "<w:document><w:body><w:p><w:r><w:t>TODO</w:t></w:r></w:p></w:body></w:document>"})
             report = SCANNER.scan_file(path, False)
             self.assertTrue(any(hit["term"] == "TODO" for hit in report["high_hits"]))
+
+    def test_todo_in_url_is_not_treated_as_draft_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "url.xlsx"
+            write_zip(
+                path,
+                {
+                    "xl/worksheets/sheet1.xml": (
+                        "<worksheet><sheetData><row><c><is><t>来源：https://example.com/TODO/report</t></is></c></row></sheetData></worksheet>"
+                    ),
+                },
+            )
+            report = SCANNER.scan_file(path, True)
+            self.assertFalse(any(hit["term"] == "TODO" for hit in report["high_hits"]))
+
+    def test_uncertainty_is_review_not_high_risk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "uncertainty.xlsx"
+            write_zip(
+                path,
+                {
+                    "xl/worksheets/sheet1.xml": (
+                        "<worksheet><sheetData><row><c><is><t>待核实；尚未上市；暂无同类产品</t></is></c></row></sheetData></worksheet>"
+                    ),
+                },
+            )
+            report = SCANNER.scan_file(path, True)
+            self.assertFalse(report["high_hits"])
+            self.assertEqual({hit["term"] for hit in report["review_hits"]}, {"待核实", "尚未", "暂无"})
 
     def test_dirty_pptx_detects_internal_discussion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -12,15 +12,18 @@ from zipfile import BadZipFile, ZipFile
 
 HIGH_TERMS = [
     "草稿", "工作稿", "工作底稿", "内部讨论", "仅供讨论", "不外发",
-    "待复核", "待核实", "待补充", "AI生成", "AI撰写", "本字段含",
+    "AI生成", "AI撰写", "本字段含",
     "对应内容", "完整核验记录", "删除原表", "修改说明", "调整说明",
     "证据等级", "核验说明", "核验截至", "主表采用", "源CSV", "复现脚本",
     "统计规则", "数据源SHA-256", "TODO", "TBD", "TBC", "FIXME", "DRAFT",
 ]
 
 REVIEW_TERMS = [
-    "未查得", "暂无", "尚未", "仅针对", "不外推", "分期未知", "不填写", "不使用",
+    "待复核", "待核实", "待补充", "未查得", "暂无", "尚未", "仅针对", "不外推", "分期未知", "不填写", "不使用",
 ]
+
+URL_TOLERATED_HIGH_TERMS = {"tbd", "tbc", "todo", "fixme"}
+URL_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
 
 PATH_PATTERNS = [
     re.compile(r"[A-Za-z]:\\Users\\[^\\\s]+", re.I),
@@ -40,9 +43,14 @@ def clean_xml_text(data: bytes) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def snippets(text: str, terms: list[str]) -> list[dict]:
+def _inside_url(text: str, index: int) -> bool:
+    return any(match.start() <= index < match.end() for match in URL_RE.finditer(text))
+
+
+def snippets(text: str, terms: list[str], *, tolerate_in_urls: set[str] | None = None) -> list[dict]:
     hits = []
     lowered = text.lower()
+    tolerate_in_urls = {term.lower() for term in (tolerate_in_urls or set())}
     for term in terms:
         start = 0
         needle = term.lower()
@@ -50,6 +58,9 @@ def snippets(text: str, terms: list[str]) -> list[dict]:
             index = lowered.find(needle, start)
             if index < 0:
                 break
+            if needle in tolerate_in_urls and _inside_url(text, index):
+                start = index + len(term)
+                continue
             left = max(0, index - 45)
             right = min(len(text), index + len(term) + 45)
             hits.append({"term": term, "snippet": text[left:right]})
@@ -71,7 +82,7 @@ def is_clean_source_comment(text: str) -> bool:
     normalized = text.strip()
     if not (normalized.startswith("来源") or normalized.lower().startswith("source")):
         return False
-    return not snippets(normalized, HIGH_TERMS) and bool(re.search(r"https?://|DOI|ISBN|GB/T|CN\d+", normalized, re.I))
+    return not snippets(normalized, HIGH_TERMS, tolerate_in_urls=URL_TOLERATED_HIGH_TERMS) and bool(re.search(r"https?://|DOI|ISBN|GB/T|CN\d+", normalized, re.I))
 
 
 def extract_comment_texts(data: bytes) -> list[str]:
@@ -119,7 +130,7 @@ def scan_openxml(path: Path, allow_source_comments: bool) -> dict:
             for name in relevant_parts(ext, names):
                 text = clean_xml_text(archive.read(name))
                 target = {"part": name}
-                for hit in snippets(text, HIGH_TERMS):
+                for hit in snippets(text, HIGH_TERMS, tolerate_in_urls=URL_TOLERATED_HIGH_TERMS):
                     report["high_hits"].append(target | hit)
                 for hit in snippets(text, REVIEW_TERMS):
                     report["review_hits"].append(target | hit)
@@ -203,7 +214,7 @@ def scan_legacy(path: Path) -> dict:
     }
     try:
         text = extract_legacy_strings(path.read_bytes())
-        report["high_hits"] = snippets(text, HIGH_TERMS)
+        report["high_hits"] = snippets(text, HIGH_TERMS, tolerate_in_urls=URL_TOLERATED_HIGH_TERMS)
         report["review_hits"] = snippets(text, REVIEW_TERMS)
         report["path_hits"] = [{"value": value} for value in path_hits(text)]
     except OSError as exc:
@@ -238,7 +249,7 @@ def scan_pdf(path: Path) -> dict:
             text = extract_legacy_strings(path.read_bytes())
             report["integrity"] = "binary fallback"
             report["structural"].append("pypdf unavailable; used binary string scan")
-        report["high_hits"] = snippets(text, HIGH_TERMS)
+        report["high_hits"] = snippets(text, HIGH_TERMS, tolerate_in_urls=URL_TOLERATED_HIGH_TERMS)
         report["review_hits"] = snippets(text, REVIEW_TERMS)
         report["path_hits"] = [{"value": value} for value in path_hits(text)]
     except Exception as exc:

@@ -50,11 +50,19 @@ python scripts/scan_deliverable.py "清单.xlsx" --json "清单-cleanup-audit.js
 python scripts/scan_deliverable.py "领导版.xlsx" --allow-source-comments
 ```
 
+预览简洁的正式文件名（默认不会改动文件）：
+
+```powershell
+python scripts/suggest_clean_name.py "长文件名-clean-final.xlsx" --keep-through "宽口径" --date 20260906
+```
+
 退出码：
 
 - `0`：未发现高风险痕迹。
 - `1`：发现草稿词或结构性痕迹，需要处理或人工判断。
 - `2`：文件无法解析或格式不受支持。
+
+扫描命中的“待核实、暂无、尚未”等词需要结合上下文判断；它们可能是真实限制条件，不能机械删除。URL中的 `TBD/TODO/FIXME` 也不单独视为正文草稿。
 
 ## 支持范围
 
